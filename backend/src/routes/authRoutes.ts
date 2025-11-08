@@ -1,6 +1,7 @@
 import { Router } from 'express';
 
-import { login, register } from '../controllers/authController';
+import { getSession, login, register } from '../controllers/authController';
+import { requireAuth } from '../middlewares/authMiddleware';
 
 const router = Router();
 
@@ -27,7 +28,9 @@ const router = Router();
  *               password:
  *                 type: string
  *                 minLength: 8
- *               name:
+ *               firstName:
+ *                 type: string
+ *               lastName:
  *                 type: string
  *     responses:
  *       '201':
@@ -70,5 +73,20 @@ router.post('/register', register);
  *         description: Invalid credentials.
  */
 router.post('/login', login);
+
+/**
+ * @openapi
+ * /api/auth/session:
+ *   get:
+ *     tags:
+ *       - Authentication
+ *     summary: Retrieve the authenticated user's profile and workspace memberships
+ *     responses:
+ *       '200':
+ *         description: Session details returned.
+ *       '401':
+ *         description: Authentication required.
+ */
+router.get('/session', requireAuth, getSession);
 
 export default router;

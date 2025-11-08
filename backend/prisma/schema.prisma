@@ -11,10 +11,64 @@ model User {
   id        String   @id @default(cuid())
   email     String   @unique
   password  String
-  name      String?
-  tasks     Task[]
+  username  String?  @unique
+  firstName String?
+  lastName  String?
+  tasks                Task[]
+  projects             Project[]
+  memberships          WorkspaceMembership[]
+  invitedMemberships   WorkspaceMembership[] @relation("MembershipInviter")
+  chatMessages         ChatMessage[]
+  notifications        Notification[]
+  notificationPrefs    NotificationPreference[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+model Workspace {
+  id        String   @id @default(cuid())
+  name      String
+  type      String   @default("team")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberships WorkspaceMembership[]
+  projects     Project[]
+  tasks        Task[]
+  chatRooms    ChatRoom[]
+  notifications Notification[]
+}
+
+model WorkspaceMembership {
+  id          String    @id @default(cuid())
+  role        String    @default("member")
+  userId      String
+  workspaceId String
+  invitedByUserId String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  invitedBy User?     @relation("MembershipInviter", fields: [invitedByUserId], references: [id])
+
+  @@unique([userId, workspaceId])
+}
+
+model Project {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  status      String   @default("PLANNING")
+  startDate   DateTime?
+  endDate     DateTime?
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId      String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspaceId String
+  tasks       Task[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 }
 
 model Task {
@@ -24,10 +78,80 @@ model Task {
   status      String   @default("TODO")
   priority    String   @default("MEDIUM")
   dueDate     DateTime?
-  project     String?
+  project     Project? @relation(fields: [projectId], references: [id])
+  projectId   String?
   reminderAt  DateTime?
   user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   userId      String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspaceId String
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+}
+
+model ChatRoom {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  messages    ChatMessage[]
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([workspaceId])
+}
+
+model ChatMessage {
+  id        String   @id @default(cuid())
+  roomId    String
+  authorId  String
+  content   String
+  mentions  Json?
+  createdAt DateTime @default(now())
+
+  room   ChatRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  author User     @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([roomId, createdAt])
+}
+
+model Notification {
+  id          String   @id @default(cuid())
+  title       String
+  message     String
+  type        NotificationType @default(INFO)
+  category    String   // 'chat', 'task', 'project', 'workspace', 'system'
+  isRead      Boolean  @default(false)
+  userId      String
+  workspaceId String?
+  metadata    Json?    // Additional context like taskId, projectId, etc.
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead])
+  @@index([userId, createdAt])
+}
+
+model NotificationPreference {
+  id          String   @id @default(cuid())
+  userId      String
+  category    String   // 'chat', 'task', 'project', 'workspace', 'system'
+  inApp       Boolean  @default(true)
+  desktop     Boolean  @default(true)
+  sound       Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, category])
+}
+
+enum NotificationType {
+  INFO
+  SUCCESS
+  WARNING
+  ERROR
 }

@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Plus_Jakarta_Sans, Fira_Mono } from "next/font/google";
 import "./globals.css";
+import AuthWrapper from "@/components/auth-wrapper";
 
 const plusJakartaSans = Plus_Jakarta_Sans({
   variable: "--font-plus-jakarta-sans",
@@ -28,7 +29,7 @@ export default function RootLayout({
       <body
         className={`${plusJakartaSans.variable} ${firaMono.variable} antialiased`}
       >
-        {children}
+        <AuthWrapper>{children}</AuthWrapper>
       </body>
     </html>
   );

@@ -11,6 +11,10 @@ interface TokenPayload {
 export const requireAuth = (req: Request, _res: Response, next: NextFunction) => {
   const header = req.headers.authorization;
   if (!header || !header.startsWith('Bearer ')) {
+    console.warn('[AuthMiddleware] Missing or malformed Authorization header', {
+      path: req.path,
+      method: req.method,
+    });
     next(new HttpError(401, 'Authorization header missing or malformed'));
     return;
   }
@@ -26,8 +30,18 @@ export const requireAuth = (req: Request, _res: Response, next: NextFunction) =>
   try {
     const decoded = jwt.verify(token, secret) as TokenPayload;
     req.user = { id: decoded.userId, email: decoded.email };
+    console.info('[AuthMiddleware] Authenticated request', {
+      path: req.path,
+      method: req.method,
+      userId: decoded.userId,
+    });
     next();
   } catch (err) {
+    console.error('[AuthMiddleware] Invalid token', {
+      path: req.path,
+      method: req.method,
+      error: err,
+    });
     next(new HttpError(401, 'Invalid or expired token'));
   }
 };

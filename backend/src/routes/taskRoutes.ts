@@ -2,10 +2,12 @@ import { Router } from 'express';
 
 import { createTask, deleteTask, getTasks, updateTask } from '../controllers/taskController';
 import { requireAuth } from '../middlewares/authMiddleware';
+import { requireWorkspaceContext } from '../middlewares/workspaceMiddleware';
 
 const router = Router();
 
 router.use(requireAuth);
+router.use(requireWorkspaceContext);
 
 /**
  * @openapi
