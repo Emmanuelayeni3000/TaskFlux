@@ -23,9 +23,10 @@ import { Label } from "@/components/ui/label";
 import { Calendar as CalendarIcon, Loader2, Plus } from "lucide-react";
 import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { useWorkspaceTasks, type TaskStatus, type TaskPriority } from "@/hooks/use-workspace-tasks";
+import { type TaskStatus, type TaskPriority } from "@/hooks/use-workspace-tasks";
 import { useWorkspaceProjects, type Project } from "@/hooks/use-workspace-projects";
 import { useCurrentWorkspace } from "@/store/workspaceStore";
+import { useTaskRefreshStore } from "@/store/taskRefreshStore";
 import { workspaceFetch } from "@/lib/workspace-request";
 import { format } from "date-fns";
 
@@ -79,7 +80,7 @@ export function TaskModal({ trigger, open: externalOpen, onOpenChange, task, onS
     hasTrigger: !!trigger
   });
 
-  const { refetch } = useWorkspaceTasks();
+  const triggerRefresh = useTaskRefreshStore((state) => state.triggerRefresh);
   const { projects } = useWorkspaceProjects();
   const currentWorkspace = useCurrentWorkspace();
   const workspaceReady = Boolean(currentWorkspace?.id);
@@ -154,8 +155,8 @@ export function TaskModal({ trigger, open: externalOpen, onOpenChange, task, onS
       const responseData = await response.json();
       console.log("📥 TaskModal: Response data", responseData);
 
-      console.log("🔄 TaskModal: Refetching tasks");
-      await refetch();
+      console.log("🔄 TaskModal: Triggering global task refresh");
+      triggerRefresh();
       
       console.log("🎉 TaskModal: Calling onSuccess callback");
       onSuccess?.();

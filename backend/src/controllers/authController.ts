@@ -7,6 +7,7 @@ import { HttpError } from '../middlewares/errorMiddleware';
 import { createAccessToken } from '../utils/token';
 import { comparePassword, hashPassword } from '../utils/password';
 import { generateUniqueUsername } from '../utils/username';
+import { securityLogger } from '../services/securityLogger';
 
 const registerSchema = z.object({
   email: z.string().email(),
@@ -233,20 +234,54 @@ export const login = async (req: Request, res: Response, next: NextFunction) => 
   try {
     const { email, password } = loginSchema.parse(req.body);
 
-    const userRecord = await prisma.user.findUnique({ where: { email } });
-    if (!userRecord) {
-      throw new HttpError(401, 'Invalid email or password');
+    // Normalize email to lowercase for consistent lookup
+    const normalizedEmail = email.toLowerCase().trim();
+
+    // Add a small delay to prevent timing attacks
+    const startTime = Date.now();
+    const minResponseTime = 500; // minimum 500ms response time
+
+    const userRecord = await prisma.user.findUnique({ 
+      where: { email: normalizedEmail } 
+    });
+
+    // Always check password even if user doesn't exist to prevent timing attacks
+    let isValid = false;
+    if (userRecord) {
+      isValid = await comparePassword(password, userRecord.password);
+    } else {
+      // Run a dummy password comparison to maintain consistent timing
+      await comparePassword(password, '$2b$10$dummy.hash.to.prevent.timing.attacks');
     }
 
-    const isValid = await comparePassword(password, userRecord.password);
-    if (!isValid) {
-      throw new HttpError(401, 'Invalid email or password');
+    // Ensure minimum response time to prevent timing attacks
+    const elapsedTime = Date.now() - startTime;
+    if (elapsedTime < minResponseTime) {
+      await new Promise(resolve => setTimeout(resolve, minResponseTime - elapsedTime));
+    }
+
+    // Check if user exists and password is valid
+    if (!userRecord || !isValid) {
+      // Log failed login attempt for security monitoring
+      await securityLogger.logLoginFailed(req, normalizedEmail, !userRecord ? 'User not found' : 'Invalid password');
+      
+      const error = new HttpError(401, 'Invalid email or password. Please check your credentials and try again.');
+      
+      // Call rate limit callback if available
+      if (req.rateLimitNext) {
+        return req.rateLimitNext(error);
+      }
+      
+      throw error;
     }
 
     const user = await ensureUserHasUsername(userRecord);
 
     const token = createAccessToken({ userId: user.id, email: user.email });
     const workspaces = await getSerializedWorkspaceMemberships(user);
+
+    // Log successful login for security monitoring
+    await securityLogger.logLoginSuccess(req, user.id, user.email);
 
     res.status(200).json({
       user: toUserPayload(user),
@@ -255,7 +290,20 @@ export const login = async (req: Request, res: Response, next: NextFunction) => 
     });
   } catch (error: unknown) {
     if (error instanceof z.ZodError) {
-      const firstIssue = error.issues[0]?.message ?? 'Invalid request payload';
+      const emailError = error.issues.find(issue => issue.path.includes('email'));
+      const passwordError = error.issues.find(issue => issue.path.includes('password'));
+      
+      if (emailError) {
+        next(new HttpError(400, 'Please enter a valid email address.'));
+        return;
+      }
+      
+      if (passwordError) {
+        next(new HttpError(400, 'Password is required.'));
+        return;
+      }
+      
+      const firstIssue = error.issues[0]?.message ?? 'Please check your input and try again.';
       next(new HttpError(400, firstIssue));
       return;
     }

@@ -109,7 +109,7 @@ function EventPopover({ events, date }: { events: CalendarEvent[]; date: Date })
           </div>
         </button>
       </PopoverTrigger>
-      <PopoverContent className="w-80" align="start">
+      <PopoverContent className="w-80 bg-white" align="start">
         <div className="space-y-4">
           <div className="flex items-center gap-2">
             <CalendarIcon className="h-4 w-4 text-gray-500" />

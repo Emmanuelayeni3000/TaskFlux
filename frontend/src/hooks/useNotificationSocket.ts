@@ -1,12 +1,15 @@
 import { useEffect } from 'react';
 import { io, Socket } from 'socket.io-client';
+
 import { useAuthStore } from '../store/authStore';
 import { useNotifications } from './useNotifications';
 import type { Notification } from '../store/notificationStore';
+import { resolveSocketUrl } from './useWorkspaceChat';
 
-const SOCKET_URL = process.env.NEXT_PUBLIC_SOCKET_URL || 'http://localhost:3000';
+const FALLBACK_SOCKET_URL = 'http://localhost:3000';
 
 let socket: Socket | null = null;
+let cachedSocketUrl: string | null = null;
 
 export const useNotificationSocket = () => {
   const { token, isAuthenticated, user } = useAuthStore();
@@ -18,31 +21,61 @@ export const useNotificationSocket = () => {
       if (socket) {
         socket.disconnect();
         socket = null;
+        cachedSocketUrl = null;
       }
       return;
     }
 
-    // Connect to socket with authentication
-    if (!socket) {
-      socket = io(SOCKET_URL, {
-        auth: {
-          token
-        },
-        transports: ['websocket', 'polling']
-      });
+    const resolvedUrl =
+      resolveSocketUrl()
+      ?? (typeof window !== 'undefined' ? window.location.origin : null)
+      ?? FALLBACK_SOCKET_URL;
 
-      socket.on('connect', () => {
-        console.log('[NotificationSocket] Connected');
-      });
-
-      socket.on('disconnect', (reason) => {
-        console.log('[NotificationSocket] Disconnected:', reason);
-      });
-
-      socket.on('connect_error', (error) => {
-        console.error('[NotificationSocket] Connection error:', error);
-      });
+    if (!resolvedUrl) {
+      console.error('[NotificationSocket] Socket URL not configured');
+      return;
     }
+
+    const normalizedUrl = resolvedUrl.trim().length > 0 ? resolvedUrl : FALLBACK_SOCKET_URL;
+
+    // Connect to socket with authentication
+    if (!socket || cachedSocketUrl !== normalizedUrl) {
+      if (socket) {
+        socket.disconnect();
+      }
+
+      socket = io(normalizedUrl, {
+        auth: { token },
+        transports: ['websocket'],
+        withCredentials: true,
+        reconnection: true,
+        reconnectionAttempts: 5,
+        timeout: 15000,
+      });
+
+      cachedSocketUrl = normalizedUrl;
+    } else {
+      socket.auth = { token };
+      if (socket.disconnected) {
+        socket.connect();
+      }
+    }
+
+    if (!socket) {
+      return;
+    }
+
+    const handleConnect = () => {
+      console.log('[NotificationSocket] Connected');
+    };
+
+    const handleDisconnect = (reason: string) => {
+      console.log('[NotificationSocket] Disconnected:', reason);
+    };
+
+    const handleConnectError = (error: unknown) => {
+      console.error('[NotificationSocket] Connection error:', error);
+    };
 
     // Listen for new notifications
     const handleNewNotification = (notification: Notification) => {
@@ -85,6 +118,16 @@ export const useNotificationSocket = () => {
       handleNewNotification(notification);
     };
 
+    socket.off('connect', handleConnect);
+    socket.off('disconnect', handleDisconnect);
+    socket.off('connect_error', handleConnectError);
+    socket.off('notification:new', handleNewNotification);
+    socket.off('notification:unread-count', handleUnreadCountUpdate);
+    socket.off('notification:workspace', handleWorkspaceNotification);
+
+    socket.on('connect', handleConnect);
+    socket.on('disconnect', handleDisconnect);
+    socket.on('connect_error', handleConnectError);
     socket.on('notification:new', handleNewNotification);
     socket.on('notification:unread-count', handleUnreadCountUpdate);
     socket.on('notification:workspace', handleWorkspaceNotification);
@@ -92,6 +135,9 @@ export const useNotificationSocket = () => {
     // Cleanup function
     return () => {
       if (socket) {
+        socket.off('connect', handleConnect);
+        socket.off('disconnect', handleDisconnect);
+        socket.off('connect_error', handleConnectError);
         socket.off('notification:new', handleNewNotification);
         socket.off('notification:unread-count', handleUnreadCountUpdate);
         socket.off('notification:workspace', handleWorkspaceNotification);
@@ -105,6 +151,7 @@ export const useNotificationSocket = () => {
       if (socket) {
         socket.disconnect();
         socket = null;
+        cachedSocketUrl = null;
       }
     };
   }, []);

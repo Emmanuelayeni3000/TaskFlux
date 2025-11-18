@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import {
   Users,
@@ -12,19 +12,42 @@ import {
   User,
   Trash2,
   Edit,
+  Loader2,
+  MessageCircleWarning,
 } from "lucide-react";
 
 // Define types for team members
 interface TeamMember {
   id: string;
   email: string;
-  firstName: string;
-  lastName: string;
-  role: "ADMIN" | "MEMBER" | "VIEWER";
+  firstName: string | null;
+  lastName: string | null;
+  username: string | null;
+  role: "OWNER" | "ADMIN" | "MEMBER" | "VIEWER";
   status: "ACTIVE" | "PENDING" | "SUSPENDED";
   joinedAt: string;
   avatar?: string | null;
   lastActive?: string | null;
+}
+
+interface WorkspaceMemberResponse {
+  id: string;
+  membershipId: string;
+  email: string;
+  firstName: string | null;
+  lastName: string | null;
+  username: string | null;
+  role: string;
+  status?: string;
+  joinedAt: string;
+  lastActiveAt?: string | null;
+  invitedBy?: {
+    id: string;
+    email: string;
+    firstName: string | null;
+    lastName: string | null;
+    username: string | null;
+  } | null;
 }
 
 interface User {
@@ -48,51 +71,17 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useCurrentWorkspace } from "@/store/workspaceStore";
 import { useAuthStore } from "@/store/authStore";
+import { workspaceFetch } from "@/lib/workspace-request";
+import { InviteMemberModal } from "@/components/modals/invite-member-modal";
 
 const fadeInProps = {
   initial: { opacity: 0, y: 24 },
   animate: { opacity: 1, y: 0 },
 };
 
-// Mock team members data - this would come from an API
-const mockTeamMembers: TeamMember[] = [
-  {
-    id: "1",
-    email: "john.doe@company.com",
-    firstName: "John",
-    lastName: "Doe",
-    role: "ADMIN",
-    status: "ACTIVE",
-    joinedAt: "2024-01-15T10:00:00Z",
-    avatar: null,
-    lastActive: "2024-01-28T14:30:00Z",
-  },
-  {
-    id: "2",
-    email: "jane.smith@company.com", 
-    firstName: "Jane",
-    lastName: "Smith",
-    role: "MEMBER",
-    status: "ACTIVE",
-    joinedAt: "2024-01-20T09:15:00Z",
-    avatar: null,
-    lastActive: "2024-01-29T16:45:00Z",
-  },
-  {
-    id: "3",
-    email: "mike.wilson@company.com",
-    firstName: "Mike",
-    lastName: "Wilson", 
-    role: "VIEWER",
-    status: "PENDING",
-    joinedAt: "2024-01-25T11:30:00Z",
-    avatar: null,
-    lastActive: null,
-  },
-];
-
 function getRoleIcon(role: string) {
   switch (role) {
+    case "OWNER":
     case "ADMIN":
       return <Crown className="h-4 w-4" />;
     case "MEMBER":
@@ -106,6 +95,7 @@ function getRoleIcon(role: string) {
 
 function getRoleBadgeColor(role: string) {
   switch (role) {
+    case "OWNER":
     case "ADMIN":
       return "bg-purple-100 text-purple-700 border-purple-200";
     case "MEMBER":
@@ -151,6 +141,7 @@ function formatLastActive(lastActive: string | null) {
 interface TeamMemberCardProps {
   member: TeamMember;
   currentUser: User | null;
+  currentWorkspaceRole: TeamMember["role"];
   onEditMember: (member: TeamMember) => void;
   onRemoveMember: (member: TeamMember) => void;
   onResendInvite: (member: TeamMember) => void;
@@ -159,12 +150,26 @@ interface TeamMemberCardProps {
 function TeamMemberCard({ 
   member, 
   currentUser, 
+  currentWorkspaceRole,
   onEditMember, 
   onRemoveMember, 
   onResendInvite 
 }: TeamMemberCardProps) {
   const isCurrentUser = currentUser?.id === member.id;
-  const canManageMembers = currentUser?.role === "ADMIN" && !isCurrentUser;
+  const roleCanManage = currentWorkspaceRole === "OWNER" || currentWorkspaceRole === "ADMIN";
+  const canManageMembers = roleCanManage && !isCurrentUser && member.role !== "OWNER";
+  const displayName = [member.firstName, member.lastName].filter(Boolean).join(" ") || member.username || member.email;
+  const initials = (() => {
+    const first = member.firstName?.trim().charAt(0);
+    const last = member.lastName?.trim().charAt(0);
+    if (first || last) {
+      return `${first ?? ""}${last ?? ""}`.toUpperCase();
+    }
+    if (member.username) {
+      return member.username.trim().slice(0, 2).toUpperCase();
+    }
+    return member.email.slice(0, 2).toUpperCase();
+  })();
 
   return (
     <Card className="border-taskflux-light-gray/70 bg-white/90 hover:shadow-md transition-all">
@@ -172,9 +177,9 @@ function TeamMemberCard({
         <div className="flex items-start justify-between">
           <div className="flex items-start gap-4">
             <Avatar className="h-12 w-12">
-              <AvatarImage src={member.avatar || undefined} alt={`${member.firstName} ${member.lastName}`} />
+              <AvatarImage src={member.avatar || undefined} alt={displayName} />
               <AvatarFallback className="bg-taskflux-sky-blue/10 text-taskflux-sky-blue font-semibold">
-                {member.firstName?.[0]}{member.lastName?.[0]}
+                {initials}
               </AvatarFallback>
             </Avatar>
             
@@ -182,7 +187,7 @@ function TeamMemberCard({
               <div className="space-y-1">
                 <div className="flex items-center gap-2">
                   <h3 className="font-semibold text-taskflux-slate-navy">
-                    {member.firstName} {member.lastName}
+                    {displayName}
                     {isCurrentUser && (
                       <span className="ml-2 text-sm font-normal text-taskflux-cool-gray">(You)</span>
                     )}
@@ -206,7 +211,7 @@ function TeamMemberCard({
 
               <div className="text-xs text-taskflux-cool-gray space-y-1">
                 <div>Joined {new Date(member.joinedAt).toLocaleDateString()}</div>
-                <div>Last active {formatLastActive(member.lastActive || null)}</div>
+                <div>Last active {formatLastActive(member.lastActive ?? null)}</div>
               </div>
             </div>
           </div>
@@ -249,14 +254,127 @@ function TeamMemberCard({
 export function TeamMembersView() {
   const currentWorkspace = useCurrentWorkspace();
   const currentUser = useAuthStore((state) => state.user);
-  const [members] = useState<TeamMember[]>(mockTeamMembers);
+  const [members, setMembers] = useState<TeamMember[]>([]);
+  const [isLoadingMembers, setIsLoadingMembers] = useState(false);
+  const [membersError, setMembersError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+  const [isInviteModalOpen, setInviteModalOpen] = useState(false);
+
+  const workspaceRole: TeamMember["role"] = currentWorkspace?.role
+    ? (currentWorkspace.role.toUpperCase() as TeamMember["role"])
+    : "VIEWER";
+  const canInviteMembers = workspaceRole === "OWNER" || workspaceRole === "ADMIN";
+
+  useEffect(() => {
+    if (!currentWorkspace || currentWorkspace.type !== "team") {
+      setMembers([]);
+      setMembersError(null);
+      setIsLoadingMembers(false);
+      return;
+    }
+
+    let isActive = true;
+    const controller = new AbortController();
+
+    const loadMembers = async () => {
+      setIsLoadingMembers(true);
+      setMembersError(null);
+
+      try {
+        const response = await workspaceFetch(
+          `/workspaces/${currentWorkspace.id}/members`,
+          undefined,
+          {
+            includeQueryParam: false,
+            workspaceId: currentWorkspace.id,
+            signal: controller.signal,
+          }
+        );
+
+        let payload: unknown = null;
+        try {
+          payload = await response.json();
+        } catch {
+          payload = null;
+        }
+
+        if (!response.ok) {
+          const message =
+            payload && typeof (payload as { message?: unknown }).message === "string"
+              ? (payload as { message: string }).message
+              : "Failed to load team members";
+          throw new Error(message);
+        }
+
+        if (!isActive) {
+          return;
+        }
+
+        const membersPayload = (payload as { members?: WorkspaceMemberResponse[] })?.members ?? [];
+
+        const resolvedMembers = membersPayload.map((member) => {
+          const upperRole = String(member.role ?? "member").toUpperCase();
+          const normalizedRole: TeamMember["role"] =
+            upperRole === "OWNER" || upperRole === "ADMIN" || upperRole === "VIEWER"
+              ? (upperRole as TeamMember["role"])
+              : "MEMBER";
+
+          const statusValue = String(member.status ?? "ACTIVE").toUpperCase();
+          const normalizedStatus: TeamMember["status"] =
+            statusValue === "PENDING" || statusValue === "SUSPENDED"
+              ? (statusValue as TeamMember["status"])
+              : "ACTIVE";
+
+          return {
+            id: member.id,
+            email: member.email,
+            firstName: member.firstName ?? null,
+            lastName: member.lastName ?? null,
+            username: member.username ?? null,
+            role: normalizedRole,
+            status: normalizedStatus,
+            joinedAt: member.joinedAt,
+            avatar: null,
+            lastActive: member.lastActiveAt ?? null,
+          } satisfies TeamMember;
+        });
+
+        setMembers(resolvedMembers);
+      } catch (error) {
+        if (!isActive) {
+          return;
+        }
+
+        if (error instanceof DOMException && error.name === "AbortError") {
+          return;
+        }
+
+        console.error("[TeamMembersView] Failed to fetch team members", error);
+        setMembers([]);
+        setMembersError(error instanceof Error ? error.message : "Failed to load team members");
+      } finally {
+        if (isActive) {
+          setIsLoadingMembers(false);
+        }
+      }
+    };
+
+    void loadMembers();
+
+    return () => {
+      isActive = false;
+      controller.abort();
+    };
+  }, [currentWorkspace, reloadKey]);
 
   // Filter and sort members
   const sortedMembers = useMemo(() => {
     return [...members].sort((a, b) => {
-      // Admins first, then by join date
-      if (a.role === "ADMIN" && b.role !== "ADMIN") return -1;
-      if (b.role === "ADMIN" && a.role !== "ADMIN") return 1;
+      // Admins/owners first, then by join date
+      const aIsAdmin = a.role === "ADMIN" || a.role === "OWNER";
+      const bIsAdmin = b.role === "ADMIN" || b.role === "OWNER";
+      if (aIsAdmin && !bIsAdmin) return -1;
+      if (bIsAdmin && !aIsAdmin) return 1;
       return new Date(a.joinedAt).getTime() - new Date(b.joinedAt).getTime();
     });
   }, [members]);
@@ -265,14 +383,17 @@ export function TeamMembersView() {
     const total = members.length;
     const active = members.filter(m => m.status === "ACTIVE").length;
     const pending = members.filter(m => m.status === "PENDING").length;
-    const admins = members.filter(m => m.role === "ADMIN").length;
+    const admins = members.filter(m => m.role === "ADMIN" || m.role === "OWNER").length;
 
     return { total, active, pending, admins };
   }, [members]);
 
   const handleInviteMember = () => {
-    // TODO: Open invite member modal
-    console.log("Invite member");
+    if (!canInviteMembers) {
+      return;
+    }
+
+    setInviteModalOpen(true);
   };
 
   const handleEditMember = (member: TeamMember) => {
@@ -288,6 +409,10 @@ export function TeamMembersView() {
   const handleResendInvite = (member: TeamMember) => {
     // TODO: Resend invitation email
     console.log("Resend invite", member);
+  };
+
+  const handleRefreshMembers = () => {
+    setReloadKey((key) => key + 1);
   };
 
   if (!currentWorkspace || currentWorkspace.type === "personal") {
@@ -310,11 +435,15 @@ export function TeamMembersView() {
             Manage your team members and their permissions in {currentWorkspace.name}
           </p>
         </div>
-        
-        <Button onClick={handleInviteMember} className="bg-taskflux-sky-blue hover:bg-taskflux-blue-hover">
-          <UserPlus className="mr-2 h-4 w-4" />
-          Invite Member
-        </Button>
+        {canInviteMembers ? (
+          <Button
+            onClick={handleInviteMember}
+            className="bg-taskflux-sky-blue hover:bg-taskflux-blue-hover"
+          >
+            <UserPlus className="mr-2 h-4 w-4" />
+            Invite Member
+          </Button>
+        ) : null}
       </motion.div>
 
       {/* Stats Cards */}
@@ -374,20 +503,46 @@ export function TeamMembersView() {
           <h2 className="text-xl font-semibold text-taskflux-slate-navy">Members</h2>
         </div>
 
-        <div className="grid gap-4">
-          {sortedMembers.map((member) => (
-            <TeamMemberCard
-              key={member.id}
-              member={member}
-              currentUser={currentUser}
-              onEditMember={handleEditMember}
-              onRemoveMember={handleRemoveMember}
-              onResendInvite={handleResendInvite}
-            />
-          ))}
-        </div>
+        {membersError ? (
+          <Card className="border-taskflux-red/40 bg-taskflux-red/5">
+            <CardContent className="flex flex-col items-center gap-3 py-6 text-center">
+              <MessageCircleWarning className="h-10 w-10 text-taskflux-red" />
+              <div>
+                <h3 className="text-base font-semibold text-taskflux-red">Unable to load members</h3>
+                <p className="text-sm text-taskflux-red/80">{membersError}</p>
+              </div>
+              <Button
+                variant="outline"
+                onClick={handleRefreshMembers}
+                className="border-taskflux-red/50 text-taskflux-red hover:bg-taskflux-red/10"
+                disabled={isLoadingMembers}
+              >
+                Retry
+              </Button>
+            </CardContent>
+          </Card>
+        ) : null}
 
-        {members.length === 0 && (
+        {isLoadingMembers ? (
+          <div className="flex items-center justify-center rounded-2xl border border-taskflux-light-gray/70 bg-white/90 py-12">
+            <Loader2 className="h-5 w-5 animate-spin text-taskflux-sky-blue" />
+            <span className="ml-3 text-sm font-medium text-taskflux-cool-gray">Loading team members…</span>
+          </div>
+        ) : sortedMembers.length > 0 ? (
+          <div className="grid gap-4">
+            {sortedMembers.map((member) => (
+              <TeamMemberCard
+                key={member.id}
+                member={member}
+                currentUser={currentUser}
+                currentWorkspaceRole={workspaceRole}
+                onEditMember={handleEditMember}
+                onRemoveMember={handleRemoveMember}
+                onResendInvite={handleResendInvite}
+              />
+            ))}
+          </div>
+        ) : (
           <Card className="border-taskflux-light-gray/70 bg-white/90">
             <CardContent className="text-center py-12">
               <Users className="h-12 w-12 text-gray-400 mx-auto mb-4" />
@@ -395,14 +550,32 @@ export function TeamMembersView() {
               <p className="text-gray-600 mb-6">
                 Get started by inviting your first team member to collaborate.
               </p>
-              <Button onClick={handleInviteMember} className="bg-taskflux-sky-blue hover:bg-taskflux-blue-hover">
-                <UserPlus className="mr-2 h-4 w-4" />
-                Invite Your First Member
-              </Button>
+              {canInviteMembers ? (
+                <Button
+                  onClick={handleInviteMember}
+                  className="bg-taskflux-sky-blue hover:bg-taskflux-blue-hover"
+                >
+                  <UserPlus className="mr-2 h-4 w-4" />
+                  Invite Your First Member
+                </Button>
+              ) : (
+                <p className="text-sm text-taskflux-cool-gray">
+                  Only workspace owners or admins can send invitations.
+                </p>
+              )}
             </CardContent>
           </Card>
         )}
       </motion.div>
+
+      <InviteMemberModal
+        open={isInviteModalOpen}
+        onOpenChange={setInviteModalOpen}
+        onInvited={() => {
+          setInviteModalOpen(false);
+          handleRefreshMembers();
+        }}
+      />
     </div>
   );
 }

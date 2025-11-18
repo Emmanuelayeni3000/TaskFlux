@@ -124,10 +124,44 @@ export default function LoginPage() {
         // Navigation will be handled by useEffect when isAuthenticated becomes true
       } else {
         setWorkspaceLoading(false);
-        setError(result.message || "Login failed");
+        
+        // Handle different error types with user-friendly messages
+        let errorMessage = "Login failed. Please try again.";
+        
+        if (response.status === 401) {
+          errorMessage = result.message || "Invalid email or password. Please check your credentials and try again.";
+        } else if (response.status === 429) {
+          errorMessage = result.message || "Too many login attempts. Please wait a few minutes before trying again.";
+        } else if (response.status === 400) {
+          if (result.message?.includes('email')) {
+            errorMessage = "Please enter a valid email address.";
+          } else if (result.message?.includes('password')) {
+            errorMessage = "Password is required.";
+          } else {
+            errorMessage = result.message || "Please check your input and try again.";
+          }
+        } else if (response.status >= 500) {
+          errorMessage = "Server error. Please try again later or contact support if the problem persists.";
+        } else {
+          errorMessage = result.message || "Login failed. Please try again.";
+        }
+        
+        setError(errorMessage);
       }
     } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : "An unexpected error occurred";
+      let errorMessage = "Unable to connect to the server. Please check your internet connection and try again.";
+      
+      if (error instanceof Error) {
+        // Handle specific network/fetch errors
+        if (error.message.includes('fetch')) {
+          errorMessage = "Unable to connect to the server. Please check your internet connection and try again.";
+        } else if (error.message.includes('timeout')) {
+          errorMessage = "The request timed out. Please try again.";
+        } else {
+          errorMessage = "An unexpected error occurred. Please try again.";
+        }
+      }
+      
       setWorkspaceLoading(false);
       setError(errorMessage);
     } finally {
@@ -226,8 +260,23 @@ export default function LoginPage() {
                 </button>
               </div>
               {error && (
-                <div className="rounded-lg border border-taskflux-red/20 bg-taskflux-red/5 p-3 text-center">
-                  <p className="text-taskflux-red text-sm">{error}</p>
+                <div className="rounded-lg border border-taskflux-red/20 bg-taskflux-red/5 p-4">
+                  <div className="flex items-start gap-3">
+                    <div className="flex h-5 w-5 items-center justify-center rounded-full bg-taskflux-red/10 mt-0.5">
+                      <svg className="h-3 w-3 text-taskflux-red" fill="currentColor" viewBox="0 0 20 20">
+                        <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                      </svg>
+                    </div>
+                    <div className="flex-1">
+                      <p className="text-taskflux-red text-sm font-medium">Sign in failed</p>
+                      <p className="text-taskflux-red/80 text-sm mt-1">{error}</p>
+                      {error.includes('Too many') && (
+                        <p className="text-taskflux-cool-gray text-xs mt-2">
+                          For security reasons, your account has been temporarily restricted. You can also try resetting your password.
+                        </p>
+                      )}
+                    </div>
+                  </div>
                 </div>
               )}
               <Button

@@ -10,10 +10,16 @@ export interface ChatAuthor {
   username: string | null;
 }
 
+export type ChatMessageType = "TEXT" | "IMAGE" | "AUDIO";
+
 export interface ChatMessage {
   id: string;
   workspaceId: string;
-  content: string;
+  type: ChatMessageType;
+  content: string | null;
+  attachmentUrl: string | null;
+  attachmentMimeType: string | null;
+  attachmentDurationMs: number | null;
   mentions: unknown;
   createdAt: string;
   author: ChatAuthor;
@@ -75,8 +81,20 @@ export const useChatStore = create<ChatState>((set) => ({
   activeWorkspaceId: null,
   joinedWorkspaces: {},
   error: null,
-  setConnectionStatus: (status) => set({ connectionStatus: status }),
-  setError: (error) => set({ error }),
+  setConnectionStatus: (status) =>
+    set((state) => {
+      if (state.connectionStatus === status) {
+        return state;
+      }
+      return { connectionStatus: status };
+    }),
+  setError: (error) =>
+    set((state) => {
+      if (state.error === error) {
+        return state;
+      }
+      return { error };
+    }),
   setHistoryLoading: (workspaceId, loading, mode) =>
     set((state) => ({
       historyLoading: { ...state.historyLoading, [workspaceId]: loading },

@@ -28,7 +28,7 @@ export const NotificationBell: React.FC = () => {
           )}
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-80 p-0" align="end">
+      <PopoverContent className="w-80 border border-taskflux-light-gray/70 bg-white p-0 shadow-lg" align="end">
         <NotificationDropdown />
       </PopoverContent>
     </Popover>

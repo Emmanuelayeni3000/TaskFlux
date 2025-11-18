@@ -3,17 +3,38 @@ import { io, type Socket } from "socket.io-client";
 
 import { workspaceFetch } from "@/lib/workspace-request";
 import { useAuthStore } from "@/store/authStore";
-import { useChatStore, type ChatMessage } from "@/store/chatStore";
+import { useChatStore, type ChatMessage, type ChatMessageType } from "@/store/chatStore";
 import { useTeamWorkspaces, useWorkspaceStore } from "@/store/workspaceStore";
 
 let socketInstance: Socket | null = null;
 let listenersAttached = false;
 
+type ChatStoreState = ReturnType<typeof useChatStore.getState>;
+
+const selectMessages = (state: ChatStoreState) => state.messages;
+const selectHistoryLoading = (state: ChatStoreState) => state.historyLoading;
+const selectHistoryMode = (state: ChatStoreState) => state.historyMode;
+const selectNextCursor = (state: ChatStoreState) => state.nextCursor;
+const selectHistoryComplete = (state: ChatStoreState) => state.historyComplete;
+const selectUnreadCounts = (state: ChatStoreState) => state.unreadCounts;
+const selectJoinedWorkspaces = (state: ChatStoreState) => state.joinedWorkspaces;
+const selectConnectionStatus = (state: ChatStoreState) => state.connectionStatus;
+const selectChatError = (state: ChatStoreState) => state.error;
+
 const SOCKET_ERROR_GENERIC = "Unable to connect to team chat";
 const HISTORY_ERROR_GENERIC = "Unable to load chat history";
 const MESSAGE_ERROR_GENERIC = "Unable to send message";
 
-const resolveSocketUrl = () => {
+export type SendWorkspaceChatMessageInput = {
+  content?: string;
+  mentions?: Array<{ userId: string; username: string }>;
+  type?: ChatMessageType;
+  attachmentUrl?: string | null;
+  attachmentMimeType?: string | null;
+  attachmentDurationMs?: number | null;
+};
+
+export const resolveSocketUrl = () => {
   const configured = process.env.NEXT_PUBLIC_SOCKET_URL?.trim();
   if (configured) {
     return configured;
@@ -37,23 +58,53 @@ const resolveSocketUrl = () => {
   }
 };
 
+let currentSocketId: string | null = null;
+
 const attachSocketListeners = () => {
+  console.log('[Chat] attachSocketListeners called', {
+    hasSocketInstance: !!socketInstance,
+    listenersAttached
+  });
+
   if (!socketInstance || listenersAttached) {
+    console.log('[Chat] Skipping listener attachment');
     return;
   }
 
+  console.log('[Chat] Attaching socket listeners');
   listenersAttached = true;
 
   socketInstance.on("connect", () => {
+    console.log('[Chat] Socket connected');
     useChatStore.getState().setConnectionStatus("connected");
     useChatStore.getState().setError(null);
+
+    const socketIdChanged = currentSocketId !== socketInstance?.id;
+    currentSocketId = socketInstance?.id ?? null;
+
+    if (socketIdChanged) {
+      console.log('[Chat] Socket id changed, rejoining workspaces');
+      useChatStore.setState({ joinedWorkspaces: {} });
+
+      const workspaceState = useWorkspaceStore.getState();
+      const rejoinTargets = workspaceState.workspaces.filter((workspace) => workspace.type === "team");
+
+      for (const workspace of rejoinTargets) {
+        if (!socketInstance) {
+          break;
+        }
+  void joinWorkspaceRoom(workspace.id, socketInstance, true);
+      }
+    }
   });
 
-  socketInstance.on("disconnect", () => {
+  socketInstance.on("disconnect", (reason) => {
+    console.log('[Chat] Socket disconnected', { reason });
     useChatStore.getState().setConnectionStatus("disconnected");
   });
 
-  socketInstance.io.on("reconnect_attempt", () => {
+  socketInstance.io.on("reconnect_attempt", (attempt) => {
+    console.log('[Chat] Socket reconnection attempt', { attempt });
     useChatStore.getState().setConnectionStatus("connecting");
   });
 
@@ -64,10 +115,18 @@ const attachSocketListeners = () => {
   });
 
   socketInstance.on("chat:message", (payload: ChatMessage) => {
+    console.log('[Chat] Received chat:message event', {
+      messageId: payload?.id,
+      workspaceId: payload?.workspaceId,
+      hasContent: !!payload?.content
+    });
+
     if (!payload?.workspaceId) {
+      console.log('[Chat] Ignoring message - no workspaceId');
       return;
     }
 
+    console.log('[Chat] Processing incoming message', payload.id);
     useChatStore.getState().receiveMessage({
       ...payload,
       createdAt: payload.createdAt,
@@ -77,14 +136,20 @@ const attachSocketListeners = () => {
 };
 
 const ensureSocket = (token: string) => {
+  console.log('[Chat] ensureSocket called', { hasToken: !!token });
+  
   const url = resolveSocketUrl();
+  console.log('[Chat] Socket URL resolved', { url });
+  
   if (!url) {
+    console.error('[Chat] No socket URL configured');
     useChatStore.getState().setConnectionStatus("error");
     useChatStore.getState().setError("Socket URL not configured");
     return null;
   }
 
   if (!socketInstance) {
+    console.log('[Chat] Creating new socket instance', { url });
     socketInstance = io(url, {
       transports: ["websocket"],
       autoConnect: false,
@@ -93,34 +158,54 @@ const ensureSocket = (token: string) => {
   }
 
   socketInstance.auth = { token };
+  console.log('[Chat] Socket auth set');
 
   if (!socketInstance.connected) {
+    console.log('[Chat] Connecting socket');
     useChatStore.getState().setConnectionStatus("connecting");
     socketInstance.connect();
+  } else {
+    console.log('[Chat] Socket already connected');
   }
 
   attachSocketListeners();
   return socketInstance;
 };
 
-const joinWorkspaceRoom = (workspaceId: string, socket: Socket) => {
+const joinWorkspaceRoom = (workspaceId: string, socket: Socket, force = false) => {
+  console.log('[Chat] joinWorkspaceRoom called', { workspaceId });
+  
   const store = useChatStore.getState();
-  if (store.joinedWorkspaces[workspaceId]) {
-    return;
+  if (store.joinedWorkspaces[workspaceId] && !force) {
+    console.log('[Chat] Already joined workspace room', workspaceId);
+    return Promise.resolve(true);
   }
 
-  socket.emit("chat:join", { workspaceId }, (response: unknown) => {
-    const payload = response as { status?: string; message?: string } | undefined;
+  if (force && store.joinedWorkspaces[workspaceId]) {
+    console.log('[Chat] Forcing rejoin of workspace', workspaceId);
+    useChatStore.getState().setWorkspaceJoined(workspaceId, false);
+  }
 
-    if (payload?.status === "ok") {
-      useChatStore.getState().setWorkspaceJoined(workspaceId, true);
-      return;
-    }
+  console.log('[Chat] Emitting chat:join event', { workspaceId });
+  return new Promise<boolean>((resolve, reject) => {
+    socket.emit("chat:join", { workspaceId }, (response: unknown) => {
+      console.log('[Chat] chat:join response received', { workspaceId, response });
+      
+      const payload = response as { status?: string; message?: string } | undefined;
 
-    const message = (payload && typeof payload.message === "string")
-      ? payload.message
-      : "Unable to join chat room";
-    useChatStore.getState().setError(message);
+      if (payload?.status === "ok") {
+        console.log('[Chat] Successfully joined workspace room', workspaceId);
+        useChatStore.getState().setWorkspaceJoined(workspaceId, true);
+        resolve(true);
+        return;
+      }
+
+      const message = (payload && typeof payload.message === "string")
+        ? payload.message
+        : "Unable to join chat room";
+      useChatStore.getState().setError(message);
+      reject(new Error(message));
+    });
   });
 };
 
@@ -129,23 +214,37 @@ export function useChatConnection() {
   const teamWorkspaces = useTeamWorkspaces();
 
   useEffect(() => {
+    console.log('[useChatConnection] Effect triggered', {
+      hasToken: !!token,
+      teamWorkspacesCount: teamWorkspaces.length
+    });
+
     if (!token) {
+      console.log('[useChatConnection] No token - cleaning up connection');
       useChatStore.getState().setConnectionStatus("idle");
       if (socketInstance) {
+        console.log('[useChatConnection] Disconnecting existing socket');
         socketInstance.disconnect();
         socketInstance = null;
         listenersAttached = false;
+        currentSocketId = null;
       }
       return;
     }
 
     const socket = ensureSocket(token);
     if (!socket) {
+      console.log('[useChatConnection] Failed to ensure socket');
       return;
     }
 
+    console.log('[useChatConnection] Joining team workspace rooms', {
+      count: teamWorkspaces.length
+    });
+
     for (const workspace of teamWorkspaces) {
-      joinWorkspaceRoom(workspace.id, socket);
+      console.log('[useChatConnection] Joining workspace room', workspace.id);
+  void joinWorkspaceRoom(workspace.id, socket);
     }
   }, [teamWorkspaces, token]);
 }
@@ -161,38 +260,71 @@ export function useWorkspaceChat(options?: {
   const currentWorkspaceId = useWorkspaceStore((state) => state.currentWorkspaceId);
   const workspaceId = options?.workspaceId ?? currentWorkspaceId;
 
+  console.log('[useWorkspaceChat] Hook initialized', {
+    workspaceId,
+    currentWorkspaceId,
+    autoJoin,
+    autoLoadHistory,
+    markActive,
+    hasToken: !!token
+  });
+
   useChatConnection();
 
-  const messages = useChatStore((state) => (workspaceId ? state.messages[workspaceId] ?? [] : []));
-  const connectionStatus = useChatStore((state) => state.connectionStatus);
-  const isHistoryLoading = useChatStore((state) => (workspaceId ? state.historyLoading[workspaceId] ?? false : false));
-  const historyMode = useChatStore((state) => (workspaceId ? state.historyMode[workspaceId] ?? null : null));
-  const nextCursor = useChatStore((state) => (workspaceId ? state.nextCursor[workspaceId] ?? null : null));
-  const historyComplete = useChatStore((state) => (workspaceId ? state.historyComplete[workspaceId] ?? false : false));
-  const unreadCount = useChatStore((state) => (workspaceId ? state.unreadCounts[workspaceId] ?? 0 : 0));
-  const isJoined = useChatStore((state) => (workspaceId ? !!state.joinedWorkspaces[workspaceId] : false));
-  const chatError = useChatStore((state) => state.error);
+  const messagesMap = useChatStore(selectMessages);
+  const historyLoadingMap = useChatStore(selectHistoryLoading);
+  const historyModeMap = useChatStore(selectHistoryMode);
+  const nextCursorMap = useChatStore(selectNextCursor);
+  const historyCompleteMap = useChatStore(selectHistoryComplete);
+  const unreadCountsMap = useChatStore(selectUnreadCounts);
+  const joinedWorkspacesMap = useChatStore(selectJoinedWorkspaces);
+  const storeConnectionStatus = useChatStore(selectConnectionStatus);
+  const storeError = useChatStore(selectChatError);
+
+  const connectionStatus = autoJoin ? storeConnectionStatus : "disconnected";
+  const messages = workspaceId && autoJoin ? messagesMap[workspaceId] ?? [] : [];
+  const isHistoryLoading = workspaceId && autoJoin ? historyLoadingMap[workspaceId] ?? false : false;
+  const historyMode = workspaceId && autoJoin ? historyModeMap[workspaceId] ?? null : null;
+  const nextCursor = workspaceId && autoJoin ? nextCursorMap[workspaceId] ?? null : null;
+  const historyComplete = workspaceId && autoJoin ? historyCompleteMap[workspaceId] ?? false : false;
+  const unreadCount = workspaceId && autoJoin ? unreadCountsMap[workspaceId] ?? 0 : 0;
+  const isJoined = workspaceId && autoJoin ? !!joinedWorkspacesMap[workspaceId] : false;
+  const chatError = autoJoin ? storeError : null;
 
   useEffect(() => {
-    if (!workspaceId || !token) {
+    console.log('[useWorkspaceChat] Main effect triggered', {
+      workspaceId,
+      hasToken: !!token,
+      autoJoin,
+      markActive
+    });
+
+    if (!workspaceId || !token || !autoJoin) {
+      console.log('[useWorkspaceChat] Skipping effect - missing requirements', {
+        hasWorkspaceId: !!workspaceId,
+        hasToken: !!token,
+        autoJoin
+      });
       return;
     }
 
     const socket = ensureSocket(token);
     if (!socket) {
+      console.log('[useWorkspaceChat] Failed to ensure socket');
       return;
     }
 
-    if (autoJoin) {
-      joinWorkspaceRoom(workspaceId, socket);
-    }
+    console.log('[useWorkspaceChat] Joining workspace room', workspaceId);
+  void joinWorkspaceRoom(workspaceId, socket);
 
     if (markActive) {
+      console.log('[useWorkspaceChat] Marking workspace active', workspaceId);
       useChatStore.getState().markWorkspaceActive(workspaceId);
     }
 
     return () => {
       if (markActive && useChatStore.getState().activeWorkspaceId === workspaceId) {
+        console.log('[useWorkspaceChat] Cleaning up - marking workspace inactive', workspaceId);
         useChatStore.getState().markWorkspaceActive(null);
       }
     };
@@ -200,16 +332,28 @@ export function useWorkspaceChat(options?: {
 
   const loadHistory = useCallback(
     async (mode: "initial" | "older" = "initial") => {
-      if (!workspaceId) {
+      console.log('[useWorkspaceChat] loadHistory called', {
+        mode,
+        workspaceId,
+        autoJoin
+      });
+
+      if (!workspaceId || !autoJoin) {
+        console.log('[useWorkspaceChat] loadHistory skipped - requirements not met', {
+          hasWorkspaceId: !!workspaceId,
+          autoJoin
+        });
         return false;
       }
 
       const chatState = useChatStore.getState();
       if (chatState.historyLoading[workspaceId]) {
+        console.log('[useWorkspaceChat] loadHistory skipped - already loading', workspaceId);
         return false;
       }
 
       if (mode === "older" && chatState.historyComplete[workspaceId]) {
+        console.log('[useWorkspaceChat] loadHistory skipped - history complete', workspaceId);
         return false;
       }
 
@@ -219,6 +363,13 @@ export function useWorkspaceChat(options?: {
         return false;
       }
 
+      console.log('[useWorkspaceChat] Starting history load', {
+        workspaceId,
+        mode,
+        cursor,
+        hasHistoryComplete: chatState.historyComplete[workspaceId]
+      });
+
       chatState.setHistoryLoading(workspaceId, true, mode);
 
       try {
@@ -227,14 +378,23 @@ export function useWorkspaceChat(options?: {
           params.set("cursor", cursor);
         }
 
+        const url = `/workspaces/${workspaceId}/chat/messages${params.toString() ? `?${params.toString()}` : ""}`;
+        console.log('[useWorkspaceChat] Fetching chat history', { url, workspaceId });
+
         const response = await workspaceFetch(
-          `/workspaces/${workspaceId}/chat/messages${params.toString() ? `?${params.toString()}` : ""}`,
+          url,
           undefined,
           {
             workspaceId,
             includeQueryParam: false,
           }
         );
+
+        console.log('[useWorkspaceChat] Chat history response', {
+          status: response.status,
+          ok: response.ok,
+          workspaceId
+        });
 
         let payload: unknown = null;
         try {
@@ -248,6 +408,11 @@ export function useWorkspaceChat(options?: {
             payload && typeof (payload as Record<string, unknown>).message === "string"
               ? String((payload as Record<string, unknown>).message)
               : HISTORY_ERROR_GENERIC;
+          console.error('[useWorkspaceChat] Failed to load chat history', {
+            status: response.status,
+            message,
+            workspaceId
+          });
           useChatStore.getState().setError(message);
           return false;
         }
@@ -260,6 +425,13 @@ export function useWorkspaceChat(options?: {
             }))
           : [];
 
+        console.log('[useWorkspaceChat] Processing chat history', {
+          messageCount: formatted.length,
+          nextCursor: data.nextCursor,
+          mode,
+          workspaceId
+        });
+
         useChatStore.getState().mergeMessages(
           workspaceId,
           formatted,
@@ -268,62 +440,187 @@ export function useWorkspaceChat(options?: {
 
         useChatStore.getState().setHistoryCursor(workspaceId, data.nextCursor ?? null);
         if (!data.nextCursor) {
+          console.log('[useWorkspaceChat] History loading complete for workspace', workspaceId);
           useChatStore.getState().markHistoryComplete(workspaceId);
         }
 
+        console.log('[useWorkspaceChat] History load successful', workspaceId);
         return true;
       } catch (error) {
         const fallback = error instanceof Error ? error.message : HISTORY_ERROR_GENERIC;
+        console.error('[useWorkspaceChat] Error loading chat history', {
+          error: fallback,
+          workspaceId,
+          mode
+        });
         useChatStore.getState().setError(fallback);
         return false;
       } finally {
+        console.log('[useWorkspaceChat] History loading finished', workspaceId);
         useChatStore.getState().setHistoryLoading(workspaceId, false, null);
       }
     },
-    [workspaceId]
+    [workspaceId, autoJoin]
   );
 
   useEffect(() => {
-    if (!workspaceId || !autoLoadHistory) {
+    console.log('[useWorkspaceChat] Auto-load history effect triggered', {
+      workspaceId,
+      autoLoadHistory,
+      autoJoin,
+      messagesLength: messages.length,
+      isHistoryLoading,
+      historyComplete
+    });
+
+    if (!workspaceId || !autoLoadHistory || !autoJoin) {
+      console.log('[useWorkspaceChat] Skipping auto-load - requirements not met', {
+        hasWorkspaceId: !!workspaceId,
+        autoLoadHistory,
+        autoJoin
+      });
+      return;
+    }
+
+    if (historyComplete) {
+      console.log('[useWorkspaceChat] Skipping auto-load - history already complete', {
+        historyComplete
+      });
       return;
     }
 
     if (messages.length > 0 || isHistoryLoading) {
+      console.log('[useWorkspaceChat] Skipping auto-load - already have data or loading', {
+        messagesLength: messages.length,
+        isHistoryLoading
+      });
       return;
     }
 
-    void loadHistory("initial");
-  }, [autoLoadHistory, isHistoryLoading, loadHistory, messages.length, workspaceId]);
+    console.log('[useWorkspaceChat] Scheduling initial history load', workspaceId);
+    // Add a small delay to prevent rapid successive calls
+    const timeoutId = setTimeout(() => {
+      console.log('[useWorkspaceChat] Executing delayed initial history load', workspaceId);
+      void loadHistory("initial");
+    }, 100);
+
+    return () => {
+      console.log('[useWorkspaceChat] Clearing auto-load timeout', workspaceId);
+      clearTimeout(timeoutId);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoLoadHistory, autoJoin, historyComplete, isHistoryLoading, messages.length, workspaceId]);
 
   const sendMessage = useCallback(
-    (content: string, mentions?: Array<{ userId: string; username: string }>) => {
-      if (!workspaceId) {
-        return Promise.reject(new Error("Workspace context missing"));
+    async ({
+      content = "",
+      mentions = [],
+      type,
+      attachmentUrl,
+      attachmentMimeType,
+      attachmentDurationMs,
+    }: SendWorkspaceChatMessageInput = {}): Promise<ChatMessage> => {
+      const trimmedContent = content.trim();
+      const resolvedType: ChatMessageType = type
+        ?? (attachmentUrl
+          ? attachmentMimeType?.startsWith("audio/")
+            ? "AUDIO"
+            : "IMAGE"
+          : "TEXT");
+
+      console.log('[useWorkspaceChat] sendMessage called', {
+        contentLength: trimmedContent.length,
+        workspaceId,
+        autoJoin,
+        mentionsCount: mentions.length,
+        attachmentUrl,
+        attachmentMimeType,
+        attachmentDurationMs,
+        resolvedType,
+      });
+
+      if (!workspaceId || !autoJoin) {
+        console.log('[useWorkspaceChat] sendMessage rejected - chat not available', {
+          hasWorkspaceId: !!workspaceId,
+          autoJoin,
+        });
+        return Promise.reject(new Error("Chat not available"));
+      }
+
+      if (resolvedType === "TEXT" && trimmedContent.length === 0) {
+        console.log('[useWorkspaceChat] sendMessage rejected - empty text message');
+        return Promise.reject(new Error("Message content required"));
+      }
+
+      if (resolvedType !== "TEXT" && !attachmentUrl) {
+        console.log('[useWorkspaceChat] sendMessage rejected - attachment missing');
+        return Promise.reject(new Error("Attachment required"));
       }
 
       const tokenValue = useAuthStore.getState().token;
       if (!tokenValue) {
+        console.log('[useWorkspaceChat] sendMessage rejected - no auth token');
         return Promise.reject(new Error("Authentication required"));
       }
 
       const socket = ensureSocket(tokenValue);
       if (!socket) {
+        console.log('[useWorkspaceChat] sendMessage rejected - no socket');
         return Promise.reject(new Error(SOCKET_ERROR_GENERIC));
       }
 
       if (autoJoin) {
-        joinWorkspaceRoom(workspaceId, socket);
+        console.log('[useWorkspaceChat] Ensuring workspace room joined before sending', workspaceId);
+        try {
+          await joinWorkspaceRoom(workspaceId, socket);
+        } catch (error) {
+          console.error('[useWorkspaceChat] Failed to join workspace before sending', {
+            workspaceId,
+            error
+          });
+          throw error instanceof Error ? error : new Error("Unable to join chat room");
+        }
+      }
+
+      const payload: {
+        workspaceId: string;
+        content?: string | null;
+        mentions: typeof mentions;
+        type: ChatMessageType;
+        attachmentUrl?: string;
+        attachmentMimeType?: string;
+        attachmentDurationMs?: number;
+      } = {
+        workspaceId,
+        mentions,
+        type: resolvedType,
+      };
+
+      if (trimmedContent.length > 0) {
+        payload.content = trimmedContent;
+      }
+
+      if (attachmentUrl) {
+        payload.attachmentUrl = attachmentUrl;
+      }
+
+      if (attachmentMimeType) {
+        payload.attachmentMimeType = attachmentMimeType;
+      }
+
+      if (typeof attachmentDurationMs === "number" && Number.isFinite(attachmentDurationMs)) {
+        payload.attachmentDurationMs = attachmentDurationMs;
       }
 
       return new Promise<ChatMessage>((resolve, reject) => {
         socket.emit(
           "chat:message",
-          { workspaceId, content, mentions },
+          payload,
           (response: unknown) => {
-            const payload = response as { status?: string; message?: unknown } | undefined;
+            const messageResponse = response as { status?: string; message?: unknown } | undefined;
 
-            if (payload?.status === "ok" && payload.message && typeof payload.message === "object") {
-              const message = payload.message as ChatMessage;
+            if (messageResponse?.status === "ok" && messageResponse.message && typeof messageResponse.message === "object") {
+              const message = messageResponse.message as ChatMessage;
               const normalized: ChatMessage = {
                 ...message,
                 workspaceId,
@@ -334,8 +631,8 @@ export function useWorkspaceChat(options?: {
             }
 
             const errorMessage =
-              payload && typeof payload.message === "string"
-                ? payload.message
+              messageResponse && typeof messageResponse.message === "string"
+                ? messageResponse.message
                 : MESSAGE_ERROR_GENERIC;
             reject(new Error(errorMessage));
           }

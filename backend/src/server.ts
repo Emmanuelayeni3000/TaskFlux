@@ -1,5 +1,7 @@
 import cors from 'cors';
 import express, { type Request, type Response } from 'express';
+import fs from 'fs';
+import path from 'path';
 import dotenv from 'dotenv';
 import swaggerUi from 'swagger-ui-express';
 import { createServer } from 'http';
@@ -37,6 +39,13 @@ app.use('/health', (_req: Request, res: Response) => {
 });
 
 app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+
+const resolvedChatUploadDir = process.env.CHAT_UPLOAD_DIR
+  ? path.resolve(process.env.CHAT_UPLOAD_DIR)
+  : path.resolve(process.cwd(), 'uploads', 'chat');
+const uploadsRoot = path.resolve(resolvedChatUploadDir, '..');
+fs.mkdirSync(uploadsRoot, { recursive: true });
+app.use('/uploads', express.static(uploadsRoot));
 
 app.use('/api/auth', authRoutes);
 app.use('/api/workspaces', workspaceRoutes);

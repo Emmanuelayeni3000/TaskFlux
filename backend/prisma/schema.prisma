@@ -104,7 +104,11 @@ model ChatMessage {
   id        String   @id @default(cuid())
   roomId    String
   authorId  String
-  content   String
+  type      ChatMessageType @default(TEXT)
+  content   String?
+  attachmentUrl        String?
+  attachmentMimeType   String?
+  attachmentDurationMs Int?
   mentions  Json?
   createdAt DateTime @default(now())
 
@@ -112,6 +116,12 @@ model ChatMessage {
   author User     @relation(fields: [authorId], references: [id], onDelete: Cascade)
 
   @@index([roomId, createdAt])
+}
+
+enum ChatMessageType {
+  TEXT
+  IMAGE
+  AUDIO
 }
 
 model Notification {

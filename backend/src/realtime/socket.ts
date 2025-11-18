@@ -7,10 +7,11 @@ import { NotificationService } from '../services/notificationService';
 
 let ioInstance: Server | null = null;
 import {
+  chatMessageSchemaBase,
   chatMessageAuthorSelect,
-  createMessageSchema,
   ensureChatRoom,
   serializeMessage,
+  validateChatMessagePayload,
 } from '../controllers/chatController';
 import { verifyAccessToken } from '../utils/token';
 
@@ -20,9 +21,14 @@ interface SocketAuthContext {
   joinedWorkspaces: Set<string>;
 }
 
-const messageEventSchema = createMessageSchema.extend({
-  workspaceId: z.string().cuid(),
-});
+const messageEventSchema = chatMessageSchemaBase
+  .extend({
+    workspaceId: z.string().cuid(),
+  })
+  .superRefine((value, ctx) => {
+    const { workspaceId: _workspaceId, ...messagePayload } = value;
+    validateChatMessagePayload(messagePayload, ctx);
+  });
 
 const getSocketAuth = (socket: Socket): SocketAuthContext => {
   if (!socket.data) {
@@ -136,8 +142,11 @@ export const initSocketServer = (
           throw new Error('Unauthenticated socket');
         }
 
-        const payload = messageEventSchema.parse(raw);
-        const { workspaceId, content, mentions } = payload;
+  const payload = messageEventSchema.parse(raw);
+  const workspaceId = payload.workspaceId;
+  const messageType = payload.type ?? 'TEXT';
+  const trimmedContent = payload.content?.trim() ?? '';
+  const captionContent = trimmedContent.length > 0 ? trimmedContent : null;
 
         if (!auth.joinedWorkspaces.has(workspaceId)) {
           throw new Error('Join the workspace chat before sending messages');
@@ -166,8 +175,16 @@ export const initSocketServer = (
           data: {
             roomId: room.id,
             authorId: auth.userId,
-            content,
-            mentions: mentions?.length ? mentions : undefined,
+            type: messageType,
+            content: messageType === 'TEXT' ? trimmedContent : captionContent,
+            attachmentUrl: messageType === 'TEXT' ? null : payload.attachmentUrl ?? null,
+            attachmentMimeType:
+              messageType === 'TEXT' ? null : payload.attachmentMimeType ?? null,
+            attachmentDurationMs:
+              messageType === 'AUDIO' && typeof payload.attachmentDurationMs === 'number'
+                ? payload.attachmentDurationMs
+                : null,
+            mentions: payload.mentions?.length ? payload.mentions : undefined,
           },
           include: {
             author: {
@@ -197,12 +214,19 @@ export const initSocketServer = (
         if (workspaceMembers.length > 0) {
           const notificationService = new NotificationService(prisma, io);
           const senderName = message.author.firstName || message.author.username || message.author.email;
-          
+          const notificationPreviewRaw =
+            messageType === 'TEXT'
+              ? trimmedContent
+              : captionContent ?? (messageType === 'IMAGE' ? 'Sent an image' : 'Sent a voice note');
+          const notificationPreview = notificationPreviewRaw && notificationPreviewRaw.length > 0
+            ? notificationPreviewRaw
+            : 'New chat message';
+
           await notificationService.notifyNewChatMessage({
             workspaceId,
             senderId: auth.userId,
             recipientIds: workspaceMembers.map(m => m.userId),
-            messageContent: content,
+            messageContent: notificationPreview,
             senderName
           });
         }

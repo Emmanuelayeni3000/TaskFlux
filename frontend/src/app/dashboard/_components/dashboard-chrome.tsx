@@ -8,13 +8,14 @@ import {
   ClipboardCheck,
   FolderOpen,
   Home,
+  Loader2,
   MessageSquare,
   Plus,
   Search,
   Settings,
   User,
 } from "lucide-react";
-import { motion } from "framer-motion";
+import { AnimatePresence, motion } from "framer-motion";
 
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -27,8 +28,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { TaskModal } from "@/components/modals/task-modal";
+import { CreateTeamModal } from "@/components/modals/create-team-modal";
 import { NotificationBell } from "@/components/notifications/notification-bell";
-import { workspaceFetch } from "@/lib/workspace-request";
 import { useChatConnection } from "@/hooks/useWorkspaceChat";
 import { useChatStore } from "@/store/chatStore";
 import {
@@ -36,9 +37,7 @@ import {
   useCurrentWorkspace,
   usePersonalWorkspace,
   useTeamWorkspaces,
-  normalizeWorkspace,
   type Workspace,
-  type WorkspaceResponse,
 } from "@/store/workspaceStore";
 import { useWorkspaceCapabilities } from "@/hooks/use-workspace-capabilities";
 
@@ -88,10 +87,8 @@ export function DashboardChrome({
   useChatConnection();
   const isSwitching = useWorkspaceStore((state) => state.isSwitching);
   const isLoading = useWorkspaceStore((state) => state.isLoading);
-  const showWorkspaceBanner = isLoading || isSwitching;
-  const workspaceBannerLabel = isLoading
-    ? "Loading workspace context…"
-    : "Updating workspace context…";
+  const showWorkspaceBanner = isLoading && !isSwitching;
+  const workspaceBannerLabel = "Loading workspace context…";
 
   return (
     <div className="relative min-h-screen bg-taskflux-background">
@@ -105,6 +102,11 @@ export function DashboardChrome({
       />
 
       <div className="relative z-10 flex h-screen flex-col">
+        <AnimatePresence>
+          {isSwitching ? (
+            <WorkspaceSwitchOverlay key="workspace-switch-overlay" />
+          ) : null}
+        </AnimatePresence>
         {showWorkspaceBanner && (
           <div className="pointer-events-none absolute inset-x-0 top-16 z-50 flex justify-center">
             <div className="flex items-center gap-2 rounded-full border border-taskflux-light-gray/70 bg-white/90 px-4 py-1 text-xs font-medium text-taskflux-cool-gray shadow-sm">
@@ -128,82 +130,50 @@ export function DashboardChrome({
   );
 }
 
+function WorkspaceSwitchOverlay() {
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.25 }}
+      className="absolute inset-0 z-50 flex items-center justify-center bg-white/80 backdrop-blur"
+    >
+      <div className="flex flex-col items-center gap-4 rounded-3xl border border-taskflux-light-gray/60 bg-white/95 px-10 py-8 shadow-2xl">
+        <span className="flex h-14 w-14 items-center justify-center rounded-full bg-taskflux-sky-blue/10">
+          <Loader2 className="h-7 w-7 animate-spin text-taskflux-sky-blue" />
+        </span>
+        <div className="space-y-1 text-center">
+          <p className="text-sm font-semibold text-taskflux-slate-navy">Switching workspace…</p>
+          <p className="text-xs text-taskflux-cool-gray">
+            Bringing your workspace data online. This won’t take long.
+          </p>
+        </div>
+      </div>
+    </motion.div>
+  );
+}
+
 function TopBar({ onLogout }: { onLogout: () => void }) {
   const currentWorkspace = useCurrentWorkspace();
   const personalWorkspace = usePersonalWorkspace();
   const teamWorkspaces = useTeamWorkspaces();
   const unreadCounts = useChatStore((state) => state.unreadCounts);
   const switchWorkspace = useWorkspaceStore((state) => state.switchWorkspace);
-  const addWorkspace = useWorkspaceStore((state) => state.addWorkspace);
-  const setError = useWorkspaceStore((state) => state.setError);
-  const setLoading = useWorkspaceStore((state) => state.setLoading);
   const isSwitching = useWorkspaceStore((state) => state.isSwitching);
   const isLoading = useWorkspaceStore((state) => state.isLoading);
   const workspaceError = useWorkspaceStore((state) => state.error);
   const capabilities = useWorkspaceCapabilities();
   const canCreateTasks = capabilities.canCreateTasks;
   const canCreateWorkspaces = capabilities.canCreateWorkspaces;
-  const [isCreating, setIsCreating] = useState(false);
-  const createWorkspaceError = "Unable to create workspace. Try again.";
+  const [isCreating] = useState(false);
+  const [isTeamModalOpen, setIsTeamModalOpen] = useState(false);
 
   const workspaceLabel = isLoading && !currentWorkspace
     ? "Loading workspaces…"
     : currentWorkspace?.name ?? "Select workspace";
 
-  const handleCreateTeam = async () => {
-    if (!canCreateWorkspaces || isCreating) {
-      return;
-    }
 
-    setIsCreating(true);
-    setError(null);
-    setLoading(true);
-
-    const workspaceName = `New Team ${teamWorkspaces.length + 1}`;
-
-    try {
-      const response = await workspaceFetch("/workspaces", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          name: workspaceName,
-          type: "team",
-        }),
-      }, {
-        workspaceId: null,
-        includeQueryParam: false,
-      });
-
-      if (!response.ok) {
-        const message = await response
-          .json()
-          .then((payload) =>
-            payload && typeof payload === "object" && typeof payload.message === "string"
-              ? payload.message
-              : createWorkspaceError
-          )
-          .catch(() => createWorkspaceError);
-        setError(message);
-        return;
-      }
-
-      const payload = (await response.json()) as { workspace?: WorkspaceResponse };
-      if (!payload.workspace) {
-        setError(createWorkspaceError);
-        return;
-      }
-
-      addWorkspace(normalizeWorkspace(payload.workspace));
-    } catch (error: unknown) {
-      const fallback = error instanceof Error ? error.message : createWorkspaceError;
-      setError(fallback || createWorkspaceError);
-    } finally {
-      setIsCreating(false);
-      setLoading(false);
-    }
-  };
 
   const getRoleLabel = (role: Workspace["role"]) => {
     if (role === "owner") return "Owner";
@@ -316,14 +286,14 @@ function TopBar({ onLogout }: { onLogout: () => void }) {
                 <DropdownMenuItem
                   onSelect={(event) => {
                     event.preventDefault();
-                    void handleCreateTeam();
+                    setIsTeamModalOpen(true);
                   }}
                   disabled={!canCreateWorkspaces || isCreating || isLoading}
                   className={`text-taskflux-sky-blue focus:bg-taskflux-sky-blue/10 ${
                     canCreateWorkspaces && !isCreating && !isLoading ? "" : "pointer-events-none opacity-50"
                   }`}
                 >
-                  {isCreating ? "Creating workspace…" : "Create new team"}
+                  Create new team
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
@@ -388,6 +358,15 @@ function TopBar({ onLogout }: { onLogout: () => void }) {
           </DropdownMenu>
         </div>
       </div>
+      
+      {/* Create Team Modal */}
+      <CreateTeamModal
+        open={isTeamModalOpen}
+        onOpenChange={setIsTeamModalOpen}
+        onSuccess={(workspace) => {
+          switchWorkspace(workspace.id);
+        }}
+      />
     </header>
   );
 }

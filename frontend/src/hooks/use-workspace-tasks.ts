@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { workspaceFetch } from "@/lib/workspace-request";
 import { useCurrentWorkspace } from "@/store/workspaceStore";
+import { useTaskRefreshStore } from "@/store/taskRefreshStore";
 
 export type TaskStatus = "TODO" | "IN_PROGRESS" | "DONE" | "ARCHIVED";
 export type TaskPriority = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
@@ -27,6 +28,7 @@ interface UseWorkspaceTasksState {
 
 export function useWorkspaceTasks() {
   const workspace = useCurrentWorkspace();
+  const refreshTrigger = useTaskRefreshStore((state) => state.refreshTrigger);
   const [state, setState] = useState<UseWorkspaceTasksState>({
     tasks: [],
     isLoading: false,
@@ -84,6 +86,13 @@ export function useWorkspaceTasks() {
       abortControllerRef.current?.abort();
     };
   }, [fetchTasks]);
+
+  // Refetch when refresh is triggered globally
+  useEffect(() => {
+    if (refreshTrigger > 0) {
+      void fetchTasks({ skipLoadingState: true });
+    }
+  }, [refreshTrigger, fetchTasks]);
 
   return {
     ...state,

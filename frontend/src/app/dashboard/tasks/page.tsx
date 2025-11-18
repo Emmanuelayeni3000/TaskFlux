@@ -10,26 +10,32 @@ import {
   MoreHorizontal,
   Plus,
   SortAsc,
+  Clock,
+  Play,
+  Archive,
+  CheckCheck,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu";
 import { DashboardChrome } from "../_components/dashboard-chrome";
 import { useAuthStore } from "@/store/authStore";
 import { useCurrentWorkspace } from "@/store/workspaceStore";
 import { useWorkspaceCapabilities } from "@/hooks/use-workspace-capabilities";
 import { useWorkspaceTasks, type WorkspaceTask } from "@/hooks/use-workspace-tasks";
 import { TaskModal } from "@/components/modals/task-modal";
+import { useTaskRefreshStore } from "@/store/taskRefreshStore";
 
 import { workspaceFetch } from "@/lib/workspace-request";
 
-// Status progression mapping for Jira-like workflow
-const statusProgression: Record<string, string> = {
-  "TODO": "IN_PROGRESS",
-  "IN_PROGRESS": "DONE", 
-  "DONE": "ARCHIVED",
-  "ARCHIVED": "TODO", // Cycle back to start
-};
+
 
 const easeOutCurve: [number, number, number, number] = [0.16, 1, 0.3, 1];
 const baseTransition: Transition = { duration: 0.45, ease: easeOutCurve };
@@ -56,6 +62,7 @@ export default function TasksPage() {
     error: tasksError,
     refetch: refetchTasks,
   } = useWorkspaceTasks();
+  const triggerRefresh = useTaskRefreshStore((state) => state.triggerRefresh);
   const [selectedTask, setSelectedTask] = useState<WorkspaceTask | null>(null);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
 
@@ -64,19 +71,16 @@ export default function TasksPage() {
     router.push("/login");
   };
 
-  const handleTaskStatusChange = async (task: WorkspaceTask) => {
-    const nextStatus = statusProgression[task.status];
-    if (!nextStatus) return;
-
+  const handleTaskStatusChange = async (task: WorkspaceTask, newStatus: string) => {
     try {
       await workspaceFetch(`/tasks/${task.id}`, {
         method: "PUT",
         body: JSON.stringify({
           ...task,
-          status: nextStatus,
+          status: newStatus,
         }),
       });
-      await refetchTasks();
+      triggerRefresh();
     } catch (error) {
       console.error("Failed to update task status:", error);
     }
@@ -312,7 +316,6 @@ export default function TasksPage() {
         onSuccess={() => {
           setIsEditModalOpen(false);
           setSelectedTask(null);
-          refetchTasks();
         }}
       />
     </DashboardChrome>
@@ -329,7 +332,7 @@ type Lane = {
   error: string | null;
   onRefresh: () => void;
   onTaskEdit: (task: WorkspaceTask) => void;
-  onTaskStatusChange: (task: WorkspaceTask) => void;
+  onTaskStatusChange: (task: WorkspaceTask, newStatus: string) => void;
 };
 
 function TaskLane({ title, accent, description, tasks, isLoading, error, onTaskEdit, onTaskStatusChange }: Lane) {
@@ -389,7 +392,7 @@ function TaskLane({ title, accent, description, tasks, isLoading, error, onTaskE
 
 type TaskCardProps = {
   task: WorkspaceTask;
-  onStatusChange: (task: WorkspaceTask) => void;
+  onStatusChange: (task: WorkspaceTask, newStatus: string) => void;
   onEdit: (task: WorkspaceTask) => void;
 };
 
@@ -411,6 +414,13 @@ function TaskCard({ task, onStatusChange, onEdit }: TaskCardProps) {
     ARCHIVED: "taskflux-red"
   };
 
+  const statusOptions = [
+    { value: "TODO", label: "To Do", icon: Clock, color: "taskflux-cool-gray" },
+    { value: "IN_PROGRESS", label: "In Progress", icon: Play, color: "taskflux-emerald" },
+    { value: "DONE", label: "Done", icon: CheckCheck, color: "taskflux-sky-blue" },
+    { value: "ARCHIVED", label: "Archived", icon: Archive, color: "taskflux-red" },
+  ];
+
   const badges = [];
   if (task.priority) {
     badges.push({
@@ -431,6 +441,7 @@ function TaskCard({ task, onStatusChange, onEdit }: TaskCardProps) {
     : `Updated ${new Date(task.updatedAt).toLocaleDateString()}`;
 
   const borderColor = isOverdue ? "taskflux-red" : priorityColors[task.priority || "MEDIUM"];
+
   return (
     <Card
       className={`cursor-pointer border border-taskflux-light-gray/70 bg-white/95 shadow-sm transition-all duration-200 hover:-translate-y-1 hover:shadow-md ${
@@ -451,17 +462,60 @@ function TaskCard({ task, onStatusChange, onEdit }: TaskCardProps) {
               {task.description || "No description provided"}
             </p>
           </div>
-          <Button 
-            variant="ghost" 
-            size="icon" 
-            className="text-taskflux-cool-gray hover:text-taskflux-slate-navy"
-            onClick={(e) => {
-              e.stopPropagation();
-              onStatusChange(task);
-            }}
-          >
-            <MoreHorizontal className="h-4 w-4" />
-          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button 
+                variant="ghost" 
+                size="icon" 
+                className="text-taskflux-cool-gray hover:text-taskflux-slate-navy"
+                onClick={(e) => {
+                  e.stopPropagation();
+                }}
+              >
+                <MoreHorizontal className="h-4 w-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent 
+              align="end" 
+              className="w-48 bg-white border border-taskflux-light-gray/70 shadow-lg"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="px-2 py-1.5 text-xs font-medium text-taskflux-cool-gray uppercase tracking-wider">
+                Change Status
+              </div>
+              <DropdownMenuSeparator className="bg-taskflux-light-gray/30" />
+              {statusOptions.map((status) => {
+                const Icon = status.icon;
+                const isCurrentStatus = task.status === status.value;
+                
+                return (
+                  <DropdownMenuItem
+                    key={status.value}
+                    className={`flex items-center gap-2 px-2 py-2 text-sm cursor-pointer hover:bg-taskflux-pale-gray focus:bg-taskflux-pale-gray ${
+                      isCurrentStatus ? "bg-taskflux-pale-gray" : ""
+                    }`}
+                    onClick={() => {
+                      if (!isCurrentStatus) {
+                        onStatusChange(task, status.value);
+                      }
+                    }}
+                    disabled={isCurrentStatus}
+                  >
+                    <Icon 
+                      className="h-4 w-4" 
+                      style={{ color: `rgb(var(--${status.color}))` }}
+                    />
+                    <span className={isCurrentStatus ? "font-medium" : ""}>
+                      {status.label}
+                    </span>
+                    {isCurrentStatus && (
+                      <CheckCircle className="h-3 w-3 ml-auto text-taskflux-emerald" />
+                    )}
+                  </DropdownMenuItem>
+                );
+              })}
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {badges.map((badge) => (

@@ -1,4 +1,5 @@
 import type { User } from '@prisma/client';
+import type { NextFunction } from 'express';
 import type {
   WorkspaceCapabilities,
   WorkspaceRole,
@@ -16,6 +17,7 @@ declare global {
         role: WorkspaceRole;
         capabilities: WorkspaceCapabilities;
       };
+      rateLimitNext?: NextFunction;
     }
   }
 }
